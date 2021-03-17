@@ -71,18 +71,20 @@ float Lorentz(const vec3 v1, const vec3 v2) {
 	return (v1.x * v2.x + v1.y * v2.y - v1.z * v2.z);
 }
 
+// Vertex has positions on Beltrami-Klein model and Hypebolic plane
 class Vertex {
 public:
 	vec2 position; // real position
 	vec2 bkproj; // projected onto the beltrami-klein disc
 	unsigned int vao, vbo;
 
+	// vec2 is enough because w can be calculated with x and y
 	Vertex(const vec2 position = vec2(0, 0)) : position(position), vao(0), vbo(0) {
 		bkproj = getBKProj();
 	}
 
 	void create() {
-		// Copied sections from your example codes.
+		// Copied sections from your example codes. Modified some things though.
 		glGenVertexArrays(1, &vao);	// get 1 vao id
 		glBindVertexArray(vao);		// make it active
 		glGenBuffers(1, &vbo);
@@ -98,8 +100,14 @@ public:
 			0, NULL); 		     // stride, offset: tightly packed
 	}
 
+	// Getting the ambient coordinate, according to the hyperbolic x and y coordinates.
 	float getW() const { return sqrtf(position.x * position.x + position.y * position.y + 1); }
+	// Project the hyperbolic point onto the Beltrami-Klein disc from the Origo
+	vec2 getBKProj() { return position / getW(); }
+	// Getting the hyperbolic position as a vec3
 	vec3 get3dPos() const { return vec3(position.x, position.y, getW()); }
+	// Update the position as well as Beltrami-Klein projected position
+	void updatePos(const vec2& newPos) { position = newPos; bkproj = getBKProj(); }
 
 	// Deleting buffers and arrays.
 	~Vertex() {
@@ -107,53 +115,62 @@ public:
 		if (vao != 0) { glDeleteVertexArrays(1, &vao); }
 	}
 
-	vec2 getBKProj() { return position / getW(); } // Project the point onto the Beltrami-Klein plane from the Origo
+	// Get the hyperbolic projection on a point, which is on the Beltrami-Klein disc
 	vec3 getHyperProjFromBK(const vec3& p) {
-		return p / (sqrtf(1 - p.x * p.x - p.y * p.y));;
+		return p / (sqrtf(1 - p.x * p.x - p.y * p.y));
 	}
 
 	void draw() {
 		// Activate
-		glBindVertexArray(vao);		// make it active
+		glBindVertexArray(vao);
 
-		// FAKING DISTANCE FROM PLANE
+		// Fake size of points to simulate distance from BK disc.
+		// TODO: remove if done with textures
 		glPointSize(fmaxf(16 / powf(getW(), 2), 2));
-		gpuProgram.setUniform(vec3(1.0f, 1.0f, 0.0f), "color");
-		glDrawArrays(GL_POINTS, 0, 1);
+
+		gpuProgram.setUniform(vec3(1.0f, 1.0f, 0.0f), "color"); // Yellow
+		glDrawArrays(GL_POINTS, 0, 1); // Drawing out 1 point, which is the bkproj
 	}
 
-	// Calculate distance on the hyperbolic plane
+	// Calculate distance on the hyperbolic plane between 2 points
 	float hyperDistance(const Vertex& p, const Vertex& q) {
 		float lorentz = Lorentz(p.get3dPos(), q.get3dPos());
-		return 1 / acoshf((-1) * lorentz);
+		return acoshf((-1) * lorentz);
 	}
 
 	// Calculating the direction vector from one point to another
 	vec3 hyperDirectionVector(const Vertex& p, const Vertex& q) {
 		float distance = hyperDistance(p, q);
 		vec3 v = (q.get3dPos() - p.get3dPos() * coshf(distance)) / sinhf(distance);
+		//normalize(v);
 		return v;
 	}
 
 	// Offseting a p point in v direction with a distance.
 	void hyperOffset(Vertex& p, const vec3& v, const float distance) {
 		vec3 newPos = p.get3dPos() * coshf(distance) + v * sinhf(distance);
-		p.position = vec2(newPos.x, newPos.y);
+		p.updatePos(vec2(newPos.x, newPos.y));
 	}
 
 	// Takes in 2 points which the transition should be based on.
 	// We mirror this point onto p, then q.
 	void pan(const Vertex& p, const Vertex& q) {
+		// Mirrored point is temporary
+		Vertex tmp(this->position);
 		// Mirroring to p
-		float distance = hyperDistance(*this, q);
-		vec3 dirVec = hyperDirectionVector(*this, q);
-		hyperOffset(*this, dirVec, distance * 2);
+		float distance = hyperDistance(tmp, q);
+		vec3 dirVec = hyperDirectionVector(tmp, q);
+		hyperOffset(tmp, dirVec, distance * 2); // Double the distance
 		// Mirroring to q
-		distance = hyperDistance(*this, p);
-		dirVec = hyperDirectionVector(*this, p);
-		hyperOffset(*this, dirVec, distance * 2);
+		distance = hyperDistance(tmp, p);
+		dirVec = hyperDirectionVector(tmp, p);
+		hyperOffset(tmp, dirVec, distance * 2); // Double the distance
+		// Halving the distance between tmp and this vertex
+		distance = hyperDistance(*this, tmp);
+		dirVec = hyperDirectionVector(*this, tmp);
+		hyperOffset(*this, dirVec, distance / 2); // Half the distance
 
-		bkproj = getBKProj();
+		//bkproj = getBKProj();
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
 		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
 			sizeof(vec2),  // # bytes
@@ -293,6 +310,11 @@ void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
 	gpuProgram.create(vertexSource, fragmentSource, "outColor");
 
+	mat4 MVPtransf = { 1, 0, 0, 0,    // MVP matrix, 
+					   0, 1, 0, 0,    // row-major!
+					   0, 0, 1, 0,
+					   0, 0, 0, 1 };
+	gpuProgram.setUniform(MVPtransf, "MVP"); // Load a 4x4 row-major float matrix to the specified location
 	graph.create();
 }
 
@@ -301,16 +323,8 @@ void onDisplay() {
 	glClearColor(0, 0, 0, 0);     // background color
 	glClear(GL_COLOR_BUFFER_BIT); // clear frame buffer
 
-	mat4 MVPtransf = { 1, 0, 0, 0,    // MVP matrix, 
-					   0, 1, 0, 0,    // row-major!
-					   0, 0, 1, 0,
-					   0, 0, 0, 1 };
-
-	gpuProgram.setUniform(MVPtransf, "MVP");
-	//glUniformMatrix4fv(location, 1, GL_TRUE, &MVPtransf[0][0]);	// Load a 4x4 row-major float matrix to the specified location
-
-	graph.draw();
-
+	
+	graph.draw(); // Drawing
 	glutSwapBuffers(); // exchange buffers for double buffering
 }
 
@@ -323,29 +337,27 @@ void onKeyboard(unsigned char key, int pX, int pY) {
 void onKeyboardUp(unsigned char key, int pX, int pY) {
 }
 
-vec3 oldPos(-1, -1, 1);
+vec3 oldPos(0, 0, -1);
+bool mousePressed = false;
 // Move mouse with key pressed
-long time = 0; // time in ms
-long timeFromLastCallOnMouseMotion;
 void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
 	// Convert to normalized device space
 	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
 	float cY = 1.0f - 2.0f * pY / windowHeight;
-	vec3 newPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
-	if (oldPos.x == -1) {
-		oldPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
-	}
 
-	// Handling panning properly
-	long timeElapsed = time - timeFromLastCallOnMouseMotion;
-	if (timeElapsed > 100) {
+	// newPos = point on the beltrami klein disc projected onto the hypebolic plane
+	vec3 newPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
+
+	// Handling panning mouse actions properly
+	if (!mousePressed || oldPos.z == -1) {
 		oldPos = newPos;
 	}
-	timeFromLastCallOnMouseMotion = time;
 
-	graph.pan(Vertex(vec2(newPos.x, newPos.y)), Vertex(vec2(oldPos.x, oldPos.y)));
+	// given two points (from p to q, from oldPos to newPos), pan to the other
+	graph.pan(Vertex(vec2(oldPos.x, oldPos.y)), Vertex(vec2(newPos.x, newPos.y)));
 
 	oldPos = newPos;
+	mousePressed = true;
 	glutPostRedisplay(); // Redraw the scene
 }
 
@@ -357,8 +369,8 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 
 	char * buttonStat;
 	switch (state) {
-	case GLUT_DOWN: buttonStat = "pressed"; break;
-	case GLUT_UP:   buttonStat = "released"; break;
+	case GLUT_DOWN: buttonStat = "pressed"; mousePressed = true; break;
+	case GLUT_UP:   buttonStat = "released"; mousePressed = false; break;
 	}
 
 	switch (button) {
@@ -370,5 +382,5 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 
 // Idle event indicating that some time elapsed: do animation here
 void onIdle() {
-	time = glutGet(GLUT_ELAPSED_TIME); // elapsed time since the start of the program
+	long time = glutGet(GLUT_ELAPSED_TIME); // elapsed time since the start of the program
 }
