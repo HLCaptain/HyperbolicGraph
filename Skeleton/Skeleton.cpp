@@ -77,7 +77,7 @@ public:
 	vec2 bkproj; // projected onto the beltrami-klein disc
 	unsigned int vao, vbo;
 
-	Vertex(const vec2 position) : position(position), vao(0), vbo(0) {
+	Vertex(const vec2 position = vec2(0, 0)) : position(position), vao(0), vbo(0) {
 		bkproj = getBKProj();
 	}
 
@@ -108,6 +108,9 @@ public:
 	}
 
 	vec2 getBKProj() { return position / getW(); } // Project the point onto the Beltrami-Klein plane from the Origo
+	vec3 getHyperProjFromBK(const vec3& p) {
+		return p / (sqrtf(1 - p.x * p.x - p.y * p.y));;
+	}
 
 	void draw() {
 		// Activate
@@ -320,7 +323,7 @@ void onKeyboard(unsigned char key, int pX, int pY) {
 void onKeyboardUp(unsigned char key, int pX, int pY) {
 }
 
-vec2 oldPos(-1, -1);
+vec3 oldPos(-1, -1, 1);
 // Move mouse with key pressed
 long time = 0; // time in ms
 long timeFromLastCallOnMouseMotion;
@@ -328,26 +331,20 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
 	// Convert to normalized device space
 	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
 	float cY = 1.0f - 2.0f * pY / windowHeight;
-	vec2 newPos(cX, cY);
-	if (oldPos.x == -1 && oldPos.y == -1) {
-		oldPos = vec2(cX, cY);
+	vec3 newPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
+	if (oldPos.x == -1) {
+		oldPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
 	}
-	// !(fabs(oldPos.x - newPos.x) < 0.1 && fabs(oldPos.y - newPos.y) < 0.1)
-	vec2 pan; // TODO: PANNING
+
+	// Handling panning properly
 	long timeElapsed = time - timeFromLastCallOnMouseMotion;
 	if (timeElapsed > 100) {
 		oldPos = newPos;
 	}
 	timeFromLastCallOnMouseMotion = time;
 
-	// TODO
-	// PROJECT OLDPOS AND NEWPOS ONTO HYPERBOLIC PLANE
-	// MEASURE DISTANCE
-	// MEASURE DIRECTION VECTOR
-	// KEEP DIRECTION VECTOR'S X AND Y COORDINATES WHILE W=0 AND THEN NORMALIZE (WE USE (0, 0, 1))
-	// OFFSET FROM (0, 0, 1) WITH DIRECTION VECTOR BY DISTANCE
-	// PAN WITH (0, 0, 1) AND THE OFFSETTED POINT
-	//graph.pan(newPos - oldPos);
+	graph.pan(Vertex(vec2(newPos.x, newPos.y)), Vertex(vec2(oldPos.x, oldPos.y)));
+
 	oldPos = newPos;
 	glutPostRedisplay(); // Redraw the scene
 }
