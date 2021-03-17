@@ -142,7 +142,6 @@ public:
 	vec3 hyperDirectionVector(const Vertex& p, const Vertex& q) {
 		float distance = hyperDistance(p, q);
 		vec3 v = (q.get3dPos() - p.get3dPos() * coshf(distance)) / sinhf(distance);
-		//normalize(v);
 		return v;
 	}
 
@@ -153,10 +152,15 @@ public:
 	}
 
 	// Takes in 2 points which the transition should be based on.
-	// We mirror this point onto p, then q.
+	// TODO: DEFORMATION PRESENT, FIX NEEDED, PRIORITY: MEDIUM
 	void pan(const Vertex& p, const Vertex& q) {
+		// Don't need to pan when the two points are the same.
+		if (p.position.x == q.position.x && p.position.y == q.position.y) {
+			return;
+		}
 		// Mirrored point is temporary
-		Vertex tmp(this->position);
+		Vertex tmp;
+		tmp.updatePos(this->position);
 		// Mirroring to p
 		float distance = hyperDistance(tmp, q);
 		vec3 dirVec = hyperDirectionVector(tmp, q);
@@ -170,7 +174,7 @@ public:
 		dirVec = hyperDirectionVector(*this, tmp);
 		hyperOffset(*this, dirVec, distance / 2); // Half the distance
 
-		//bkproj = getBKProj();
+		// Updating the buffer
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
 		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
 			sizeof(vec2),  // # bytes
@@ -187,6 +191,7 @@ public:
 // Edge has 2 ends, which are points on the hyperbola.
 class Edge {
 public:
+	// Storing the edge's ends in an array, because of OpenGL Buffer
 	std::vector<Vertex*> ends;
 	unsigned int vao, vbo;
 
@@ -211,7 +216,7 @@ public:
 
 		glEnableVertexAttribArray(0);  // AttribArray 0
 		glVertexAttribPointer(0,       // vbo -> AttribArray 0
-			2, GL_FLOAT, GL_FALSE, // four floats/attrib, not fixed-point
+			2, GL_FLOAT, GL_FALSE, // 2 floats/attrib, not fixed-point
 			0, NULL); 		     // stride, offset: tightly packed
 	}
 
@@ -223,8 +228,11 @@ public:
 
 	void draw() {
 		// Activate
-		glBindVertexArray(vao);		// make it active
+		glBindVertexArray(vao);
+
+		// Updating the buffer
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		// Kind of a silly move, but don't blame me, I may fix this.
 		std::vector<vec2> points;
 		points.push_back(ends[0]->bkproj);
 		points.push_back(ends[1]->bkproj);
@@ -235,11 +243,11 @@ public:
 
 		glEnableVertexAttribArray(0);  // AttribArray 0
 		glVertexAttribPointer(0,       // vbo -> AttribArray 0
-			2, GL_FLOAT, GL_FALSE, // four floats/attrib, not fixed-point
+			2, GL_FLOAT, GL_FALSE, // 2 floats/attrib, not fixed-point
 			0, NULL); 		     // stride, offset: tightly packed
 
 		glLineWidth(1.0f);
-		gpuProgram.setUniform(vec3(1.0f, 0.5f, 0.0f), "color");
+		gpuProgram.setUniform(vec3(1.0f, 0.5f, 0.0f), "color"); // Orange
 		glDrawArrays(GL_LINE_STRIP, 0, ends.size());
 	}
 };
@@ -278,6 +286,7 @@ public:
 			}
 		}
 	}
+	// Inicializing in an OpenGL environment, generating vaos and vbos
 	void create() {
 		for (int i = 0; i < edges.size(); i++) {
 			edges[i].create();
@@ -295,7 +304,7 @@ public:
 			vertices[i].draw();
 		}
 	}
-
+	// Pan every vertex
 	void pan(const Vertex& p, const Vertex& q) {
 		for (int i = 0; i < vertices.size(); i++) {
 			vertices[i].pan(p, q);
@@ -303,13 +312,14 @@ public:
 	}
 };
 
+// The graph, which have some number of vertices and
+// a chance to have an edge between them.
 Graph graph(numberOfVertices, edgeChance);
 
 // Initialization, create an OpenGL context
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
 	gpuProgram.create(vertexSource, fragmentSource, "outColor");
-
 	mat4 MVPtransf = { 1, 0, 0, 0,    // MVP matrix, 
 					   0, 1, 0, 0,    // row-major!
 					   0, 0, 1, 0,
@@ -322,8 +332,6 @@ void onInitialization() {
 void onDisplay() {
 	glClearColor(0, 0, 0, 0);     // background color
 	glClear(GL_COLOR_BUFFER_BIT); // clear frame buffer
-
-	
 	graph.draw(); // Drawing
 	glutSwapBuffers(); // exchange buffers for double buffering
 }
@@ -337,8 +345,13 @@ void onKeyboard(unsigned char key, int pX, int pY) {
 void onKeyboardUp(unsigned char key, int pX, int pY) {
 }
 
+// Storing old position of the mouse's projected hyperbolic position.
+// Needed for transitioning into the new position.
 vec3 oldPos(0, 0, -1);
+
+// Needed to have a "smooth" panning. (no snapping)
 bool mousePressed = false;
+
 // Move mouse with key pressed
 void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
 	// Convert to normalized device space
@@ -348,13 +361,11 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
 	// newPos = point on the beltrami klein disc projected onto the hypebolic plane
 	vec3 newPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
 
-	// Handling panning mouse actions properly
-	if (!mousePressed || oldPos.z == -1) {
-		oldPos = newPos;
-	}
+	// Handling panning mouse actions properly.
+	if (!mousePressed || oldPos.z == -1) { oldPos = newPos; }
 
 	// given two points (from p to q, from oldPos to newPos), pan to the other
-	graph.pan(Vertex(vec2(oldPos.x, oldPos.y)), Vertex(vec2(newPos.x, newPos.y)));
+	graph.pan(Vertex(vec2(newPos.x, newPos.y)), Vertex(vec2(oldPos.x, oldPos.y)));
 
 	oldPos = newPos;
 	mousePressed = true;
@@ -369,7 +380,7 @@ void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel co
 
 	char * buttonStat;
 	switch (state) {
-	case GLUT_DOWN: buttonStat = "pressed"; mousePressed = true; break;
+	case GLUT_DOWN: buttonStat = "pressed"; break;
 	case GLUT_UP:   buttonStat = "released"; mousePressed = false; break;
 	}
 
