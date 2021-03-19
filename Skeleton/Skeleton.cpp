@@ -40,8 +40,12 @@ const char * const vertexSource = R"(
 
 	uniform mat4 MVP;			// uniform variable, the Model-View-Projection transformation matrix
 	layout(location = 0) in vec2 vp;	// Varying input: vp = vertex position is expected in attrib array 0
+	layout(location = 1) in vec2 vertexUV;			// Attrib Array 1
+
+	out vec2 texCoord;								// output attribute
 
 	void main() {
+		texCoord = vertexUV;							// copy texture coordinates
 		gl_Position = vec4(vp.x, vp.y, 0, 1) * MVP;		// transform vp from modeling space to normalized device space
 	}
 )";
@@ -50,12 +54,44 @@ const char * const vertexSource = R"(
 const char * const fragmentSource = R"(
 	#version 330			// Shader 3.3
 	precision highp float;	// normal floats, makes no difference on desktop computers
-	
+
+	uniform sampler2D textureUnit;
+	uniform int isGPUProcedural;
 	uniform vec3 color;		// uniform variable, the color of the primitive
+
+	in vec2 texCoord;			// variable input: interpolated texture coordinates
+	
 	out vec4 outColor;		// computed color of the current pixel
 
+    int Mandelbrot(vec2 c) {
+		vec2 z = c;
+		for(int i = 10000; i > 0; i--) {
+			z = vec2(z.x * z.x - z.y * z.y + c.x, 2 * z.x * z.y + c.y); // z_{n+1} = z_{n}^2 + c
+			if (dot(z, z) > 4) return i;
+		}
+		return 0;
+	}
+
+	vec3 ProceduralColor(vec2 c) {
+		float u = 0.5;
+		float v = 0.0;
+		float x = c.x - u;
+		x = x * x;
+		float y = c.y - v;
+		y = y * y;
+		if (x + y < 0.1) {
+			return vec3(1, 1, 0);
+		} else return vec3(0, 1, 1);
+	}
+
 	void main() {
-		outColor = vec4(color, 1);	// computed color is the color of the primitive
+		if (isGPUProcedural != 0) {
+			int i = Mandelbrot(texCoord * 3 - vec2(2, 0)); 
+			outColor = vec4((i % 5)/5.0f, (i % 11) / 11.0f, (i % 31) / 31.0f, 1); 
+			outColor = vec4(ProceduralColor(texCoord), 1);
+		} else {
+			outColor = vec4(color, 1);	// computed color is the color of the primitive
+		}
 	}
 )";
 
@@ -63,43 +99,22 @@ GPUProgram gpuProgram; // vertex and fragment shaders
 unsigned int vao;	   // virtual world on the GPU
 
 // Graph information
-const int numberOfVertices = 200; // 50 vertices in the graph.
-const float edgeChance = 0.005f; // 0...1 the chance of an edge being in between 2 points.
+const int numberOfVertices = 50; // 50 vertices in the graph.
+const float edgeChance = 0.05f; // 0...1 the chance of an edge being in between 2 points.
 
 // Lorents multiplication (dot product with the z multiplication being negated)
 float Lorentz(const vec3 v1, const vec3 v2) {
 	return (v1.x * v2.x + v1.y * v2.y - v1.z * v2.z);
 }
 
-// Vertex has positions on Beltrami-Klein model and Hypebolic plane
-class Vertex {
+// HyperPoint has positions on Beltrami-Klein model and Hypebolic plane
+class HyperPoint {
 public:
 	vec2 position; // real position
 	vec2 bkproj; // projected onto the beltrami-klein disc
-	unsigned int vao, vbo;
 
 	// vec2 is enough because w can be calculated with x and y
-	Vertex(const vec2 position = vec2(0, 0)) : position(position), vao(0), vbo(0) {
-		bkproj = getBKProj();
-	}
-
-	void create() {
-		// Copied sections from your example codes. Modified some things though.
-		glGenVertexArrays(1, &vao);	// get 1 vao id
-		glBindVertexArray(vao);		// make it active
-		glGenBuffers(1, &vbo);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
-			sizeof(vec2),  // # bytes
-			&bkproj,	      	// address
-			GL_DYNAMIC_DRAW);	// we do change later
-
-		glEnableVertexAttribArray(0);  // AttribArray 0
-		glVertexAttribPointer(0,       // vbo -> AttribArray 0
-			2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
-			0, NULL); 		     // stride, offset: tightly packed
-	}
-
+	HyperPoint(const vec2 position = vec2(0, 0)) : position(position) { bkproj = getBKProj(); }
 	// Getting the ambient coordinate, according to the hyperbolic x and y coordinates.
 	float getW() const { return sqrtf(position.x * position.x + position.y * position.y + 1); }
 	// Project the hyperbolic point onto the Beltrami-Klein disc from the Origo
@@ -108,94 +123,190 @@ public:
 	vec3 get3dPos() const { return vec3(position.x, position.y, getW()); }
 	// Update the position as well as Beltrami-Klein projected position
 	void updatePos(const vec2& newPos) { position = newPos; bkproj = getBKProj(); }
+	void updatePos() { bkproj = getBKProj(); }
 
-	// Deleting buffers and arrays.
-	~Vertex() {
-		if (vbo != 0) { glDeleteBuffers(1, &vbo); }
-		if (vao != 0) { glDeleteVertexArrays(1, &vao); }
+	~HyperPoint() {	}
+};
+
+// Calculate distance on the hyperbolic plane between 2 points
+float hyperDistance(const HyperPoint& p, const HyperPoint& q) { 
+	return acoshf((-1) * Lorentz(p.get3dPos(), q.get3dPos())); 
+}
+
+// Get the hyperbolic projection on a point, which is on the Beltrami-Klein disc
+vec3 getHyperProjFromBK(const vec3& p) { return p / (sqrtf(1 - p.x * p.x - p.y * p.y)); }
+
+// Calculating the direction vector from one point to another
+vec3 hyperDirectionVector(const HyperPoint& p, const HyperPoint& q) {
+	float distance = hyperDistance(p, q);
+	return (q.get3dPos() - p.get3dPos() * coshf(distance)) / sinhf(distance);
+}
+
+// Offseting a p point in v direction with a distance.
+void hyperOffset(HyperPoint& p, const vec3& v, const float distance) {
+	vec3 newPos = p.get3dPos() * coshf(distance) + v * sinhf(distance);
+	// updating the position according to the new point's position
+	p.updatePos(vec2(newPos.x, newPos.y));
+}
+
+// Takes in 2 points which the transition should be based on. Transforms 'point'.
+// DEFORMATION PRESENT, FIX NOT NEEDED, PRIORITY: LOW
+void pan(const HyperPoint& p, const HyperPoint& q, HyperPoint& point) {
+	// Don't need to pan when the two points are the same.
+	if (p.position.x == q.position.x && p.position.y == q.position.y) { return; }
+
+	// Mirrored point is temporary
+	HyperPoint tmp;
+	tmp.updatePos(point.position);
+	// Mirroring to p
+	float distance = hyperDistance(tmp, q);
+	vec3 dirVec = hyperDirectionVector(tmp, q);
+	hyperOffset(tmp, dirVec, distance * 2); // Double the distance
+	// Mirroring to q
+	distance = hyperDistance(tmp, p);
+	dirVec = hyperDirectionVector(tmp, p);
+	hyperOffset(tmp, dirVec, distance * 2); // Double the distance
+	// Halving the distance between tmp and this vertex
+	distance = hyperDistance(point, tmp);
+	dirVec = hyperDirectionVector(point, tmp);
+	hyperOffset(point, dirVec, distance / 2); // Half the distance
+}
+
+float circleDefaultRadius = 0.2f;
+// HyperCircle is a circle on the hyperbolic plane.
+class HyperCircle {
+public:
+	HyperPoint center; // center of the circle
+	std::vector<HyperPoint> hyperVertices; // vertices of the circle
+	std::vector<vec2> bkproj; // Beltrami-Klein disc projection of the HyperPoints
+	int tessellatedVertices; // number of vertices in the circle
+	float radius; // radius
+	unsigned int vao, vbo[2];
+	std::vector<vec2> vertexUVs;
+
+	HyperCircle() :
+		center(HyperPoint(vec2(0, 0))), // ini center as the 0,0,1
+		hyperVertices(std::vector<HyperPoint>()),
+		bkproj(std::vector<vec2>()),
+		tessellatedVertices(16),
+		radius(circleDefaultRadius),
+		vao(0), vbo(),
+		vertexUVs(std::vector<vec2>()) {
+		iniCircle(tessellatedVertices);
+	}
+	HyperCircle(const vec2& pos, const int& tessellatedVertices = 16) :
+		center(HyperPoint(vec2(0, 0))), // ini center as the 0,0,1
+		hyperVertices(std::vector<HyperPoint>()),
+		bkproj(std::vector<vec2>()),
+		tessellatedVertices(tessellatedVertices),
+		radius(circleDefaultRadius),
+		vao(0), vbo(),
+		vertexUVs(std::vector<vec2>()) {
+		iniCircle(tessellatedVertices, pos);
+	}
+	~HyperCircle() {
+		//if (vbo != 0) { glDeleteBuffers(2, vbo); }
+		//if (vao != 0) { glDeleteVertexArrays(1, &vao); }
 	}
 
-	// Get the hyperbolic projection on a point, which is on the Beltrami-Klein disc
-	vec3 getHyperProjFromBK(const vec3& p) {
-		return p / (sqrtf(1 - p.x * p.x - p.y * p.y));
+	void iniCircle(int numberOfVertices, const vec2& pos = vec2(0, 0)) {
+		// tesselate circumference
+		for (int i = 0; i < numberOfVertices; i++) {
+			float rad = M_PI * 2 * (float) i / (float) numberOfVertices;
+			vec3 dirVec = vec3(cosf(rad), sinf(rad), 0);
+			HyperPoint tesselatedVertex(center.position);
+			// always offseting in different directions with radius distance from center (0,0,1)
+			hyperOffset(tesselatedVertex, normalize(dirVec), radius);
+			// push back the needed data
+			hyperVertices.push_back(tesselatedVertex);
+			bkproj.push_back(tesselatedVertex.bkproj);
+
+			// uvs
+			dirVec = dirVec / 2 + 0.5;
+			vec2 uv(dirVec.x, dirVec.y);
+			vertexUVs.push_back(uv);
+		}
+		
+		// Pan circle to the new point.
+		// TODO: MAKE THIS MORE ACCURATE AT LONG DISTANCES, PRIORITY: HIGH, ASK SZIRMAY
+		panCircle(HyperPoint(vec2(0, 0)), HyperPoint(pos));
+	}
+
+	// updating the buffer
+	void updateBuf() {
+		glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
+			sizeof(vec2) * bkproj.size(),  // # bytes
+			&bkproj[0],	      	// address
+			GL_DYNAMIC_DRAW);	// we do change later
+		glBindBuffer(GL_ARRAY_BUFFER, vbo[1]);
+		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
+			sizeof(vec2) * vertexUVs.size(),  // # bytes
+			&vertexUVs[0],	      	// address
+			GL_DYNAMIC_DRAW);	// we do change later
+	}
+
+	// Pan every point based on two points
+	void panCircle(const HyperPoint& p, const HyperPoint& q) {
+		pan(p, q, center); // offseting center
+		// offsetting the points on the circumference
+		for (int i = 0; i < hyperVertices.size(); i++) {
+			pan(p, q, hyperVertices[i]);
+			bkproj[i] = hyperVertices[i].bkproj;
+		}
+		if (vao != 0) { // if able to, update the buffer
+			updateBuf();
+		}
+	}
+
+	void create() {
+		// Copied sections from your example codes. Modified some things though.
+		glGenVertexArrays(1, &vao);	// get 1 vao id
+		glBindVertexArray(vao);		// make it active
+		glGenBuffers(2, vbo);
+		// binding vertices
+		glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
+			sizeof(vec2) * bkproj.size(),  // # bytes
+			&bkproj[0],	      	// address
+			GL_DYNAMIC_DRAW);	// we do change later
+		glEnableVertexAttribArray(0);  // AttribArray 0
+		glVertexAttribPointer(0,       // vbo -> AttribArray 0
+			2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
+			0, NULL); 		     // stride, offset: tightly packed
+		// binding uvs
+		glBindBuffer(GL_ARRAY_BUFFER, vbo[1]);
+		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
+			sizeof(vec2) * vertexUVs.size(),  // # bytes
+			&vertexUVs[0],	      	// address
+			GL_DYNAMIC_DRAW);	// we do change later
+		glEnableVertexAttribArray(1);  // AttribArray 0
+		glVertexAttribPointer(1,       // vbo -> AttribArray 0
+			2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
+			0, NULL); 		     // stride, offset: tightly packed
 	}
 
 	void draw() {
 		// Activate
 		glBindVertexArray(vao);
 
-		// Fake size of points to simulate distance from BK disc.
-		// TODO: remove if done with textures
-		glPointSize(fmaxf(16 / powf(getW(), 2), 2));
-
+		gpuProgram.setUniform(1, "isGPUProcedural"); // procedural texture
 		gpuProgram.setUniform(vec3(1.0f, 1.0f, 0.0f), "color"); // Yellow
-		glDrawArrays(GL_POINTS, 0, 1); // Drawing out 1 point, which is the bkproj
+		glDrawArrays(GL_TRIANGLE_FAN, 0, bkproj.size()); // Drawing out all vertices, which is the bkproj array
 	}
 
-	// Calculate distance on the hyperbolic plane between 2 points
-	float hyperDistance(const Vertex& p, const Vertex& q) {
-		float lorentz = Lorentz(p.get3dPos(), q.get3dPos());
-		return acoshf((-1) * lorentz);
-	}
-
-	// Calculating the direction vector from one point to another
-	vec3 hyperDirectionVector(const Vertex& p, const Vertex& q) {
-		float distance = hyperDistance(p, q);
-		vec3 v = (q.get3dPos() - p.get3dPos() * coshf(distance)) / sinhf(distance);
-		return v;
-	}
-
-	// Offseting a p point in v direction with a distance.
-	void hyperOffset(Vertex& p, const vec3& v, const float distance) {
-		vec3 newPos = p.get3dPos() * coshf(distance) + v * sinhf(distance);
-		p.updatePos(vec2(newPos.x, newPos.y));
-	}
-
-	// Takes in 2 points which the transition should be based on.
-	// TODO: DEFORMATION PRESENT, FIX NEEDED, PRIORITY: MEDIUM
-	void pan(const Vertex& p, const Vertex& q) {
-		// Don't need to pan when the two points are the same.
-		if (p.position.x == q.position.x && p.position.y == q.position.y) {
-			return;
-		}
-		// Mirrored point is temporary
-		Vertex tmp;
-		tmp.updatePos(this->position);
-		// Mirroring to p
-		float distance = hyperDistance(tmp, q);
-		vec3 dirVec = hyperDirectionVector(tmp, q);
-		hyperOffset(tmp, dirVec, distance * 2); // Double the distance
-		// Mirroring to q
-		distance = hyperDistance(tmp, p);
-		dirVec = hyperDirectionVector(tmp, p);
-		hyperOffset(tmp, dirVec, distance * 2); // Double the distance
-		// Halving the distance between tmp and this vertex
-		distance = hyperDistance(*this, tmp);
-		dirVec = hyperDirectionVector(*this, tmp);
-		hyperOffset(*this, dirVec, distance / 2); // Half the distance
-
-		// Updating the buffer
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
-			sizeof(vec2),  // # bytes
-			&bkproj,	      	// address
-			GL_DYNAMIC_DRAW);	// we do change later
-
-		glEnableVertexAttribArray(0);  // AttribArray 0
-		glVertexAttribPointer(0,       // vbo -> AttribArray 0
-			2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
-			0, NULL); 		     // stride, offset: tightly packed
-	}
+	HyperPoint getCenter() { return center; }
+	HyperPoint* getCenterPointer() { return &center; }
 };
 
 // Edge has 2 ends, which are points on the hyperbola.
 class Edge {
 public:
 	// Storing the edge's ends in an array, because of OpenGL Buffer
-	std::vector<Vertex*> ends;
+	std::vector<HyperPoint*> ends;
 	unsigned int vao, vbo;
 
-	Edge(Vertex* start, Vertex* end) : ends(std::vector<Vertex*>()), vao(0), vbo(0) {
+	Edge(HyperPoint* start, HyperPoint* end) : ends(std::vector<HyperPoint*>()), vao(0), vbo(0) {
 		ends.push_back(start);
 		ends.push_back(end);
 	}
@@ -241,25 +352,21 @@ public:
 			&points[0],	      	// address
 			GL_DYNAMIC_DRAW);	// we do change later
 
-		glEnableVertexAttribArray(0);  // AttribArray 0
-		glVertexAttribPointer(0,       // vbo -> AttribArray 0
-			2, GL_FLOAT, GL_FALSE, // 2 floats/attrib, not fixed-point
-			0, NULL); 		     // stride, offset: tightly packed
-
 		glLineWidth(1.0f);
+		gpuProgram.setUniform(0, "isGPUProcedural"); // we use colors
 		gpuProgram.setUniform(vec3(1.0f, 0.5f, 0.0f), "color"); // Orange
 		glDrawArrays(GL_LINE_STRIP, 0, ends.size());
 	}
 };
 
-const int verticalInterval = 3;
-const int horizontalInterval = 3;
+const int verticalInterval = 4;
+const int horizontalInterval = 4;
 
 class Graph {
 public:
 	std::vector<Edge> edges;
-	std::vector<Vertex> vertices;
-	Graph(int numberOfVertices, float edgeChance) : edges(std::vector<Edge>()), vertices(std::vector<Vertex>()) {
+	std::vector<HyperCircle> vertices;
+	Graph(int numberOfVertices, float edgeChance) : edges(std::vector<Edge>()), vertices(std::vector<HyperCircle>()) {
 		// Make the graph.
 		iniVertices(numberOfVertices);
 		iniEdges(edgeChance);
@@ -272,16 +379,16 @@ public:
 			float x, y;
 			x = (float) rand() / RAND_MAX * verticalInterval * 2 - verticalInterval;
 			y = (float) rand() / RAND_MAX * horizontalInterval * 2 - horizontalInterval;
-			vertices.push_back(Vertex(vec2(x, y)));
+			vertices.push_back(HyperCircle(vec2(x, y)));
 		}
 	}
 	// Inicializing all edges of the graph between vertices
 	void iniEdges(float edgeChance) {
 		srand(69);
 		for (int i = 0; i < vertices.size(); i++) {
-			for (int j = i; j < vertices.size(); j++) {
+			for (int j = i + 1; j < vertices.size(); j++) {
 				if ((float) rand() / (float) RAND_MAX < edgeChance) {
-					edges.push_back(Edge(&vertices[i], &vertices[j]));
+					edges.push_back(Edge(vertices[i].getCenterPointer(), vertices[j].getCenterPointer()));
 				}
 			}
 		}
@@ -305,9 +412,9 @@ public:
 		}
 	}
 	// Pan every vertex
-	void pan(const Vertex& p, const Vertex& q) {
+	void pan(const HyperPoint& p, const HyperPoint& q) {
 		for (int i = 0; i < vertices.size(); i++) {
-			vertices[i].pan(p, q);
+			vertices[i].panCircle(p, q);
 		}
 	}
 };
@@ -319,6 +426,7 @@ Graph graph(numberOfVertices, edgeChance);
 // Initialization, create an OpenGL context
 void onInitialization() {
 	glViewport(0, 0, windowWidth, windowHeight);
+	gpuProgram.setUniform(0, "isGPUProcedural"); // procedural texture
 	gpuProgram.create(vertexSource, fragmentSource, "outColor");
 	mat4 MVPtransf = { 1, 0, 0, 0,    // MVP matrix, 
 					   0, 1, 0, 0,    // row-major!
@@ -359,13 +467,13 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
 	float cY = 1.0f - 2.0f * pY / windowHeight;
 
 	// newPos = point on the beltrami klein disc projected onto the hypebolic plane
-	vec3 newPos = Vertex().getHyperProjFromBK(vec3(cX, cY, 1));
+	vec3 newPos = getHyperProjFromBK(vec3(cX, cY, 1));
 
 	// Handling panning mouse actions properly.
 	if (!mousePressed || oldPos.z == -1) { oldPos = newPos; }
 
 	// given two points (from p to q, from oldPos to newPos), pan to the other
-	graph.pan(Vertex(vec2(newPos.x, newPos.y)), Vertex(vec2(oldPos.x, oldPos.y)));
+	graph.pan(HyperPoint(vec2(newPos.x, newPos.y)), HyperPoint(vec2(oldPos.x, oldPos.y)));
 
 	oldPos = newPos;
 	mousePressed = true;
