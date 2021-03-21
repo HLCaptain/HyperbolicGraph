@@ -65,27 +65,6 @@ const char * const fragmentSource = R"(
 	
 	out vec4 outColor;		// computed color of the current pixel
 
-    int Mandelbrot(vec2 c) {
-		vec2 z = c;
-		for(int i = 10000; i > 0; i--) {
-			z = vec2(z.x * z.x - z.y * z.y + c.x, 2 * z.x * z.y + c.y); // z_{n+1} = z_{n}^2 + c
-			if (dot(z, z) > 4) return i;
-		}
-		return 0;
-	}
-
-	vec3 ProceduralCircleColor(vec2 c) {
-		float u = 0.5;
-		float v = 0.0;
-		float x = c.x - u;
-		x = x * x;
-		float y = c.y - v;
-		y = y * y;
-		if (x + y < 0.1) {
-			return randomColor1;
-		} else return randomColor2;
-	}
-
 	vec3 ProceduralSquareColor(vec2 c) {
 		if (c.x > 0.25 && c.x < 0.75 && c.y > -0.25 && c.y < 0.25) {
 			return randomColor1;
@@ -94,9 +73,6 @@ const char * const fragmentSource = R"(
 
 	void main() {
 		if (isGPUProcedural != 0) {
-			//int i = Mandelbrot(texCoord * 3 - vec2(2, 0)); 
-			//outColor = vec4((i % 5)/5.0f, (i % 11) / 11.0f, (i % 31) / 31.0f, 1); 
-			//outColor = vec4(ProceduralCircleColor(texCoord), 1);
 			outColor = vec4(ProceduralSquareColor(texCoord), 1);
 		} else {
 			outColor = vec4(color, 1);	// computed color is the color of the primitive
@@ -105,16 +81,13 @@ const char * const fragmentSource = R"(
 )";
 
 GPUProgram gpuProgram; // vertex and fragment shaders
-unsigned int vao;	   // virtual world on the GPU
 
 // Graph information
 const int numberOfVertices = 50; // 50 vertices in the graph.
 const float edgeChance = 0.05f; // 0...1 the chance of an edge being in between 2 points.
 
 // Lorents multiplication (dot product with the z multiplication being negated)
-float Lorentz(const vec3 v1, const vec3 v2) {
-	return (v1.x * v2.x + v1.y * v2.y - v1.z * v2.z);
-}
+float Lorentz(const vec3 v1, const vec3 v2) { return (v1.x * v2.x + v1.y * v2.y - v1.z * v2.z); }
 
 // HyperPoint has positions on Beltrami-Klein model and Hypebolic plane
 class HyperPoint {
@@ -125,6 +98,7 @@ public:
 
 	// vec2 is enough because w can be calculated with x and y
 	HyperPoint(const vec2 position = vec2(0, 0)) : position(position) { bkproj = getBKProj(); }
+	~HyperPoint() {	}
 	// Getting the ambient coordinate, according to the hyperbolic x and y coordinates.
 	float getW() const { return sqrtf(position.x * position.x + position.y * position.y + 1); }
 	// Project the hyperbolic point onto the Beltrami-Klein disc from the Origo
@@ -134,8 +108,6 @@ public:
 	// Update the position as well as Beltrami-Klein projected position
 	void updatePos(const vec2& newPos) { position = newPos; bkproj = getBKProj(); }
 	void updatePos() { bkproj = getBKProj(); }
-
-	~HyperPoint() {	}
 };
 
 // Calculate distance on the hyperbolic plane between 2 points
@@ -145,7 +117,7 @@ float hyperDistance(const HyperPoint& p, const HyperPoint& q) {
 
 // Get the hyperbolic projection on a point, which is on the Beltrami-Klein disc
 vec3 getHyperProjFromBK(const vec3& p) {
-	if (1 - p.x * p.x - p.y * p.y > 0.01f) {
+	if (1 - p.x * p.x - p.y * p.y > 0.01f) { // boundary check is present
 		return p / (sqrtf(1 - p.x * p.x - p.y * p.y));
 	} else return p / sqrtf(0.01f);
 }
@@ -153,24 +125,26 @@ vec3 getHyperProjFromBK(const vec3& p) {
 // Calculating the direction vector from one point to another
 vec3 hyperDirectionVector(const HyperPoint& p, const HyperPoint& q) {
 	float distance = hyperDistance(p, q);
-	return (q.get3dPos() - p.get3dPos() * coshf(distance)) / fmaxf(sinhf(distance), .001f);
+	return (q.get3dPos() - p.get3dPos() * coshf(distance)) / fmaxf(sinhf(distance), .001f); // boundary check is present
 }
 
 // Offseting a p point in v direction with a distance.
 void hyperOffset(HyperPoint& p, const vec3& v, const float distance) {
-	vec3 newPos = p.get3dPos() * coshf(distance) + v * sinhf(distance);
+	vec3 newPos = p.get3dPos() * coshf(distance) + v * sinhf(distance); // r(d) = p * cosh(d) + v * sinh(d)
 	// updating the position according to the new point's position
 	p.updatePos(vec2(newPos.x, newPos.y));
 }
 
 // Takes in 2 points which the transition should be based on. Transforms 'point'.
-// DEFORMATION PRESENT, FIX NOT NEEDED, PRIORITY: LOW
+// DEFORMATION PRESENT, FIX NOT NEEDED, PRIORITY: NONE
 void pan(const HyperPoint& p, const HyperPoint& q, HyperPoint& point) {
 	// Don't need to pan when the two points are the same.
-	if (p.position.x == q.position.x && p.position.y == q.position.y) { return; }
-	if (length(p.bkproj) > length(getHyperProjFromBK(p.bkproj)) ||
-		length(q.bkproj) > length(getHyperProjFromBK(q.bkproj)) ||
-		length(point.bkproj) > length(getHyperProjFromBK(point.bkproj))) {
+	// Don't pan if the points are nan
+	if (p.position.x == q.position.x && p.position.y == q.position.y ||
+		isnan(p.position.x) ||
+		isnan(p.position.y) ||
+		isnan(p.position.x) ||
+		isnan(p.position.y)) {
 		return;
 	}
 
@@ -185,7 +159,7 @@ void pan(const HyperPoint& p, const HyperPoint& q, HyperPoint& point) {
 	distance = hyperDistance(tmp, p);
 	dirVec = hyperDirectionVector(tmp, p);
 	hyperOffset(tmp, dirVec, distance * 2); // Double the distance
-	// Halving the distance between tmp and this vertex
+	// Halving the distance between tmp and this vertex, so we get the point we need
 	distance = hyperDistance(point, tmp);
 	dirVec = hyperDirectionVector(point, tmp);
 	hyperOffset(point, dirVec, distance / 2); // Half the distance
@@ -202,34 +176,26 @@ public:
 	std::vector<vec2> bkproj; // Beltrami-Klein disc projection of the HyperPoints
 	int tessellatedVertices; // number of vertices in the circle
 	float radius; // radius
-	unsigned int vao, vbo[2];
-	std::vector<vec2> vertexUVs;
+	unsigned int vao, vbo[2]; // vao for the circle, 2 vbo for the vertices and uvs
+	std::vector<vec2> vertexUVs; // uv coordinates of the texture
 	vec3 outerColor; // outer color of the procedural texture
 	vec3 innerColor; // inner color of the procedural texture
 
-	HyperCircle() :
-		center(HyperPoint(vec2(0, 0))), // ini center as the 0,0,1
-		hyperVertices(std::vector<HyperPoint>()),
-		bkproj(std::vector<vec2>()),
-		tessellatedVertices(16),
-		radius(circleDefaultRadius),
-		vao(0), vbo(),
-		vertexUVs(std::vector<vec2>()) {
-		iniCircle(tessellatedVertices);
-	}
-	HyperCircle(const vec2& pos, const int& tessellatedVertices = 16) :
+	HyperCircle(const vec2& pos = vec2(0, 0), const int& tessellatedVertices = 16) :
 		center(HyperPoint(vec2(0, 0))), // ini center as the 0,0,1
 		hyperVertices(std::vector<HyperPoint>()),
 		bkproj(std::vector<vec2>()),
 		tessellatedVertices(tessellatedVertices),
 		radius(circleDefaultRadius),
-		vao(0), vbo(),
+		vao(0),
 		vertexUVs(std::vector<vec2>()) {
+		vbo[0] = 0;
+		vbo[1] = 0;
 		iniCircle(tessellatedVertices, pos);
 	}
 	~HyperCircle() {
-		//if (vbo != 0) { glDeleteBuffers(2, vbo); }
-		//if (vao != 0) { glDeleteVertexArrays(1, &vao); }
+		if (*vbo != 0) { glDeleteBuffers(2, vbo); }
+		if (vao != 0) { glDeleteVertexArrays(1, &vao); }
 	}
 
 	void iniCircle(int numberOfVertices, const vec2& pos = vec2(0, 0)) {
@@ -408,8 +374,8 @@ public:
 	}
 };
 
-const float verticalInterval = 24.0f;
-const float horizontalInterval = 24.0f;
+const float verticalInterval = 24.0f; // 24.0f
+const float horizontalInterval = 24.0f; // 24.0f
 const float acceleration = 12.5f; // acceleration in unit/sec
 const float phi = 12.0f; // percentage in velocity lost in every second
 const float distance = 0.5f; // desired distance between vertices
@@ -486,50 +452,70 @@ public:
 				velocity[i] = vec2(0, 0);
 			} else {
 				if (length(offset) > 0.001f) {
-					vertices[i].panCircle(HyperPoint(vec2(0, 0)), HyperPoint(offset));
+					if (hyperDistance(HyperPoint(offset), vertices[i].center) < 100.0f) {
+						vertices[i].panCircle(HyperPoint(vec2(0, 0)), HyperPoint(offset));
+					}
 					velocity[i] = velocity[i] - velocity[i] * percentageSlow - normalize(velocity[i]) * deltaSlow;
-					//velocity[i] = velocity[i] - normalize(velocity[i]) * deltaSlow;
 				}
 			}
 			//vertices[i].updateBuf();
 		}
 	}
 	void heuristicIteration() {
+		// reseting velocities
 		for (int i = 0; i < velocity.size(); i++) {
 			velocity[i] = vec2(0, 0);
 		}
+		// checking if all points are 0,0. TODO: boundary check?
+		bool allPoint00 = true;
 		for (int i = 0; i < vertices.size(); i++) {
-			for (int j = 0; j < vertices.size(); j++) {
-				if (i == j || 
-					vertices[i].getCenter().position.x == vertices[j].getCenter().position.x || 
-					vertices[i].getCenter().position.y == vertices[j].getCenter().position.y /*||
-					!(abs(vertices[i].getCenter().position.x) < 1000.0f) ||
-					!(abs(vertices[i].getCenter().position.y) < 1000.0f) ||
-					!(abs(vertices[j].getCenter().position.x) < 1000.0f) ||
-					!(abs(vertices[j].getCenter().position.y) < 1000.0f) || 
-					!(abs(vertices[i].getCenter().position.x) > -1000.0f) ||
-					!(abs(vertices[i].getCenter().position.y) > -1000.0f) ||
-					!(abs(vertices[j].getCenter().position.x) > -1000.0f) ||
-					!(abs(vertices[j].getCenter().position.y) > -1000.0f)*/) {
-					// TODO: the void is watching you as well as the points at 0,0. WAKE UP WAKE UP WAKE UP
-				} else {
-					float distance = hyperDistance(vertices[j].getCenter(), vertices[i].getCenter());
-					if (std::find(vertices[i].center.pairs.begin(), vertices[i].center.pairs.end(), &vertices[j].center) != vertices[i].center.pairs.end()) {
-						float multiplier = (distance - desiredDistance);
-						vec3 dirVec = hyperDirectionVector(vertices[i].getCenter(), vertices[j].getCenter());
-						velocity[i] = velocity[i] - normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 1.5f;
-						dirVec = hyperDirectionVector(vertices[j].getCenter(), vertices[i].getCenter());
-						velocity[j] = velocity[j] - normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 1.5f;
+			if (vertices[i].center.position.x != 0 || vertices[i].center.position.y != 0) {
+				allPoint00 = false;
+				break;
+			}
+		}
+		if (allPoint00) {
+			for (int i = 0; i < vertices.size(); i++) {
+				float x, y;
+				x = (float)rand() / RAND_MAX * verticalInterval * 2 - verticalInterval;
+				y = (float)rand() / RAND_MAX * horizontalInterval * 2 - horizontalInterval;
+				velocity[i] = vec2(x, y);
+			}
+		} else {
+			for (int i = 0; i < vertices.size(); i++) {
+				for (int j = 0; j < vertices.size(); j++) {
+					// checking if the two points are the same or are one of them are nan or indexes are the same
+					if (i == j ||
+						vertices[i].getCenter().position.x == vertices[j].getCenter().position.x ||
+						vertices[i].getCenter().position.y == vertices[j].getCenter().position.y ||
+						isnan(vertices[i].getCenter().position.x) ||
+						isnan(vertices[i].getCenter().position.y) ||
+						isnan(vertices[j].getCenter().position.x) ||
+						isnan(vertices[j].getCenter().position.y)) {
+						// the void is watching you as well as the points at 0,0. WAKE UP WAKE UP WAKE UP
+						// (kind of) solved, but this comment is a reference to a meme, so I will just let it be here.
 					} else {
-						float multiplier = sqrtf(fminf(desiredDistance / distance, desiredDistance));
-						vec3 dirVec = hyperDirectionVector(vertices[i].getCenter(), vertices[j].getCenter());
-						velocity[i] = velocity[i] + normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 2;
-						dirVec = hyperDirectionVector(vertices[j].getCenter(), vertices[i].getCenter());
-						velocity[j] = velocity[j] + normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 2;
+						float distance = hyperDistance(vertices[j].getCenter(), vertices[i].getCenter());
+						if (std::find(vertices[i].center.pairs.begin(), vertices[i].center.pairs.end(), &vertices[j].center) != vertices[i].center.pairs.end()) {
+							// if the two points are connected
+							float multiplier = (distance - desiredDistance);
+							vec3 dirVec = hyperDirectionVector(vertices[i].getCenter(), vertices[j].getCenter());
+							velocity[i] = velocity[i] - normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 1.5f;
+							dirVec = hyperDirectionVector(vertices[j].getCenter(), vertices[i].getCenter());
+							velocity[j] = velocity[j] - normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 1.5f;
+						} else {
+							// if the two points are not connected
+							float multiplier = sqrtf(fminf(desiredDistance / distance, desiredDistance));
+							vec3 dirVec = hyperDirectionVector(vertices[i].getCenter(), vertices[j].getCenter());
+							velocity[i] = velocity[i] + normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 2;
+							dirVec = hyperDirectionVector(vertices[j].getCenter(), vertices[i].getCenter());
+							velocity[j] = velocity[j] + normalize(vec2(dirVec.x, dirVec.y)) * multiplier / 2;
+						}
 					}
 				}
 			}
 		}
+		// reseting circle positions after calculating velocities
 		for (int i = 0; i < vertices.size(); i++) {
 			vertices[i].iniCircle(vertices[i].tessellatedVertices);
 		}
@@ -550,7 +536,7 @@ void onInitialization() {
 					   0, 0, 1, 0,
 					   0, 0, 0, 1 };
 	gpuProgram.setUniform(MVPtransf, "MVP"); // Load a 4x4 row-major float matrix to the specified location
-	graph.create();
+	graph.create(); // creating opengl things inside the graph
 }
 
 // Window has become invalid: Redraw
