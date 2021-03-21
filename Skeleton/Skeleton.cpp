@@ -84,7 +84,7 @@ GPUProgram gpuProgram; // vertex and fragment shaders
 
 // Graph information
 const int numberOfVertices = 50; // 50 vertices in the graph.
-const float edgeChance = 0.05f; // 0...1 the chance of an edge being in between 2 points.
+const float edgeChance = 0.05f; // 5% is the chance of an edge being in between 2 points.
 
 // Lorents multiplication (dot product with the z multiplication being negated)
 float Lorentz(const vec3 v1, const vec3 v2) { return (v1.x * v2.x + v1.y * v2.y - v1.z * v2.z); }
@@ -94,7 +94,7 @@ class HyperPoint {
 public:
 	vec2 position; // real position
 	vec2 bkproj; // projected onto the beltrami-klein disc
-	std::vector<HyperPoint*> pairs;
+	std::vector<HyperPoint*> pairs; // the points which are connected to this point by an edge
 
 	// vec2 is enough because w can be calculated with x and y
 	HyperPoint(const vec2 position = vec2(0, 0)) : position(position) { bkproj = getBKProj(); }
@@ -143,11 +143,10 @@ void pan(const HyperPoint& p, const HyperPoint& q, HyperPoint& point) {
 	if (p.position.x == q.position.x && p.position.y == q.position.y ||
 		isnan(p.position.x) ||
 		isnan(p.position.y) ||
-		isnan(p.position.x) ||
-		isnan(p.position.y)) {
+		isnan(q.position.x) ||
+		isnan(q.position.y)) { // return if found a nan coordinate in p or q
 		return;
 	}
-
 	// Mirrored point is temporary
 	HyperPoint tmp;
 	tmp.updatePos(point.position);
@@ -193,12 +192,15 @@ public:
 		vbo[1] = 0;
 		iniCircle(tessellatedVertices, pos);
 	}
+	// Deleting buffers and arrays.
 	~HyperCircle() {
 		if (*vbo != 0) { glDeleteBuffers(2, vbo); }
 		if (vao != 0) { glDeleteVertexArrays(1, &vao); }
 	}
-
+	// Initiating the circle's vertices and center. Pan it if needed.
+	// Also initiates the UV coordinates.
 	void iniCircle(int numberOfVertices, const vec2& pos = vec2(0, 0)) {
+		// reseting everything except colors
 		center.updatePos(vec2(0, 0));
 		hyperVertices.clear();
 		vertexUVs.clear();
@@ -213,18 +215,14 @@ public:
 			// push back the needed data
 			hyperVertices.push_back(tesselatedVertex);
 			bkproj.push_back(tesselatedVertex.bkproj);
-
-			// uvs
+			// initializing UVs
 			dirVec = dirVec / 2 + 0.5;
 			vec2 uv(dirVec.x, dirVec.y);
 			vertexUVs.push_back(uv);
 		}
-		
-		// Pan circle to the new point.
-		// TODO: MAKE THIS MORE ACCURATE AT LONG DISTANCES, PRIORITY: HIGH, ASK SZIRMAY
+		// Pan circle to the new point. Has useful checks.
 		panCircle(HyperPoint(vec2(0, 0)), HyperPoint(pos));
 	}
-
 	// updating the buffer
 	void updateBuf() {
 		glBindVertexArray(vao);
@@ -255,9 +253,10 @@ public:
 			updateBuf();
 		}
 	}
-
+	// OpenGl initialization
 	void create() {
 		// Copied sections from your example codes. Modified some things though.
+		// Here, we buffert the vertices
 		glGenVertexArrays(1, &vao);	// get 1 vao id
 		glBindVertexArray(vao);		// make it active
 		glGenBuffers(2, vbo);
@@ -271,7 +270,7 @@ public:
 		glVertexAttribPointer(0,       // vbo -> AttribArray 0
 			2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
 			0, NULL); 		     // stride, offset: tightly packed
-		// binding uvs
+		// buffering uvs
 		glBindBuffer(GL_ARRAY_BUFFER, vbo[1]);
 		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
 			sizeof(vec2) * vertexUVs.size(),  // # bytes
@@ -281,33 +280,33 @@ public:
 		glVertexAttribPointer(1,       // vbo -> AttribArray 0
 			2, GL_FLOAT, GL_FALSE, // two floats/attrib, not fixed-point
 			0, NULL); 		     // stride, offset: tightly packed
-
-		iniColor();
+		iniColor(); // setting up the random color of the circle
 	}
 
+	// Initializing the color of the circle with 3 random colours
 	void iniColor() {
 		innerColor = vec3(
-			(float)rand() / (float)RAND_MAX,
-			(float)rand() / (float)RAND_MAX,
-			(float)rand() / (float)RAND_MAX);
+			(float)rand() / RAND_MAX,
+			(float)rand() / RAND_MAX,
+			(float)rand() / RAND_MAX);
 		outerColor = vec3(
-			(float)rand() / (float)RAND_MAX,
-			(float)rand() / (float)RAND_MAX,
-			(float)rand() / (float)RAND_MAX);
+			(float)rand() / RAND_MAX,
+			(float)rand() / RAND_MAX,
+			(float)rand() / RAND_MAX);
 	}
-
+	// Drawing out a circle with the vertices on the circumference.
 	void draw() {
-		// Activate
+		// Update
 		updateBuf();
+		// Activate
 		glBindVertexArray(vao);
-
+		// Setting procedural texture
 		gpuProgram.setUniform(innerColor, "randomColor1"); // procedural texture
 		gpuProgram.setUniform(outerColor, "randomColor2"); // procedural texture
 		gpuProgram.setUniform(1, "isGPUProcedural"); // procedural texture
-		gpuProgram.setUniform(vec3(1.0f, 1.0f, 0.0f), "color"); // Yellow
 		glDrawArrays(GL_TRIANGLE_FAN, 0, bkproj.size()); // Drawing out all vertices, which is the bkproj array
 	}
-
+	// getters, just because <i dont know>
 	HyperPoint getCenter() { return center; }
 	HyperPoint* getCenterPointer() { return &center; }
 };
@@ -318,47 +317,25 @@ public:
 	// Storing the edge's ends in an array, because of OpenGL Buffer
 	std::vector<HyperPoint*> ends;
 	unsigned int vao, vbo;
-
+	// Two HyperPoint pointers representing the two ends of the line.
 	Edge(HyperPoint* start, HyperPoint* end) : ends(std::vector<HyperPoint*>()), vao(0), vbo(0) {
 		ends.push_back(start);
 		ends.push_back(end);
+		// Add each other to the pair list of each other. Used in the force field calculations.
 		start->pairs.push_back(end);
 		end->pairs.push_back(start);
 	}
-
-	void create() {
-		glGenVertexArrays(1, &vao);	// get 1 vao id
-		glBindVertexArray(vao);		// make it active
-		glGenBuffers(1, &vbo);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-
-		std::vector<vec2> points;
-		points.push_back(ends[0]->bkproj);
-		points.push_back(ends[1]->bkproj);
-		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
-			points.size() * sizeof(vec2),  // # bytes
-			&points[0],	      	// address
-			GL_DYNAMIC_DRAW);	// we do change later
-
-		glEnableVertexAttribArray(0);  // AttribArray 0
-		glVertexAttribPointer(0,       // vbo -> AttribArray 0
-			2, GL_FLOAT, GL_FALSE, // 2 floats/attrib, not fixed-point
-			0, NULL); 		     // stride, offset: tightly packed
-	}
-
 	// Deleting buffers and arrays.
 	~Edge() {
 		if (vbo != 0) { glDeleteBuffers(1, &vbo); }
 		if (vao != 0) { glDeleteVertexArrays(1, &vao); }
 	}
-
-	void draw() {
-		// Activate
-		glBindVertexArray(vao);
-
-		// Updating the buffer
+	// OpenGl initialization
+	void create() {
+		glGenVertexArrays(1, &vao);	// get 1 vao id
+		glBindVertexArray(vao);		// make it active
+		glGenBuffers(1, &vbo);
 		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		// Kind of a silly move, but don't blame me, I may fix this.
 		std::vector<vec2> points;
 		points.push_back(ends[0]->bkproj);
 		points.push_back(ends[1]->bkproj);
@@ -366,18 +343,36 @@ public:
 			points.size() * sizeof(vec2),  // # bytes
 			&points[0],	      	// address
 			GL_DYNAMIC_DRAW);	// we do change later
-
+		glEnableVertexAttribArray(0);  // AttribArray 0
+		glVertexAttribPointer(0,       // vbo -> AttribArray 0
+			2, GL_FLOAT, GL_FALSE, // 2 floats/attrib, not fixed-point
+			0, NULL); 		     // stride, offset: tightly packed
+	}
+	// Drawing out a simple line between two projected points.
+	void draw() {
+		// Activate
+		glBindVertexArray(vao);
+		// Updating the buffer
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		// Uploading points onto an array
+		std::vector<vec2> points;
+		points.push_back(ends[0]->bkproj);
+		points.push_back(ends[1]->bkproj);
+		glBufferData(GL_ARRAY_BUFFER, 	// Copy to GPU target
+			points.size() * sizeof(vec2),  // # bytes
+			&points[0],	      	// address
+			GL_DYNAMIC_DRAW);	// we do change later
 		glLineWidth(1.0f);
-		gpuProgram.setUniform(0, "isGPUProcedural"); // we use colors
+		gpuProgram.setUniform(0, "isGPUProcedural"); // we use colors, not procedural textures
 		gpuProgram.setUniform(vec3(1.0f, 0.5f, 0.0f), "color"); // Orange
 		glDrawArrays(GL_LINE_STRIP, 0, ends.size());
 	}
 };
 
-const float verticalInterval = 24.0f; // 24.0f
-const float horizontalInterval = 24.0f; // 24.0f
+const float verticalInterval = 24.0f; // starting x velocity for each point
+const float horizontalInterval = 24.0f; // starting y velocity for each point
 const float acceleration = 12.5f; // acceleration in unit/sec
-const float phi = 12.0f; // percentage in velocity lost in every second
+const float phi = 12.0f; // variable which controls the percentage of velocity lost in every second
 const float distance = 0.5f; // desired distance between vertices
 
 class Graph {
@@ -398,9 +393,9 @@ public:
 	// Inicializing all vertices of the graph
 	// All vertices are between -1;-1 and 1;1
 	void iniVertices(int numberOfVertices) {
-		srand(420);
+		srand(420); // Blaze it
 		for (int i = 0; i < numberOfVertices; i++) {
-			float x, y;
+			float x, y; // creating random velocity vectors for each Vertex
 			x = (float)rand() / RAND_MAX * verticalInterval * 2 - verticalInterval;
 			y = (float)rand() / RAND_MAX * horizontalInterval * 2 - horizontalInterval;
 			vertices.push_back(HyperCircle());
@@ -409,7 +404,7 @@ public:
 	}
 	// Inicializing all edges of the graph between vertices
 	void iniEdges(float edgeChance) {
-		srand(69);
+		srand(69); // Nice
 		for (int i = 0; i < vertices.size(); i++) {
 			for (int j = i + 1; j < vertices.size(); j++) {
 				if ((float)rand() / RAND_MAX < edgeChance) {
@@ -420,53 +415,43 @@ public:
 	}
 	// Inicializing in an OpenGL environment, generating vaos and vbos
 	void create() {
-		for (int i = 0; i < edges.size(); i++) {
-			edges[i].create();
-		}
-		for (int i = 0; i < vertices.size(); i++) {
-			vertices[i].create();
-		}
+		for (int i = 0; i < edges.size(); i++) { edges[i].create(); }
+		for (int i = 0; i < vertices.size(); i++) { vertices[i].create(); }
 	}
 	// Letting the components draw themselves.
 	void draw() {
-		for (int i = 0; i < edges.size(); i++) {
-			edges[i].draw();
-		}
-		for (int i = 0; i < vertices.size(); i++) {
-			vertices[i].draw();
-		}
+		for (int i = 0; i < edges.size(); i++) { edges[i].draw(); }
+		for (int i = 0; i < vertices.size(); i++) { vertices[i].draw(); }
 	}
 	// Pan every vertex
 	void pan(const HyperPoint& p, const HyperPoint& q) {
-		for (int i = 0; i < vertices.size(); i++) {
-			vertices[i].panCircle(p, q);
-		}
+		for (int i = 0; i < vertices.size(); i++) { vertices[i].panCircle(p, q); }
 	}
 	// Updating the position and velocity of the vertices according to dtime
 	void tick(long dtime) {
-		float deltaSlow = accel * (float)dtime / 1000.0f;
-		float percentageSlow = phi * (float)dtime / 1000.0f;
+		float deltaSlow = accel * (float)dtime / 1000.0f; // the velocity the object needs to slow down with
+		float percentageSlow = phi * (float)dtime / 1000.0f; // slow in percentage influenced by dtime
 		for (int i = 0; i < vertices.size(); i++) {
 			vec2 offset = velocity[i] * (float)dtime / 1000.0f;
-			if (!(length(velocity[i]) > deltaSlow)) {
+			if (!(length(velocity[i]) > deltaSlow)) { // if the velocity would go negative, then set it to 0,0
 				velocity[i] = vec2(0, 0);
 			} else {
-				if (length(offset) > 0.001f) {
+				if (length(offset) > 0.001f) { // offset when it counts, so the program wouldnt break
 					if (hyperDistance(HyperPoint(offset), vertices[i].center) < 100.0f) {
 						vertices[i].panCircle(HyperPoint(vec2(0, 0)), HyperPoint(offset));
 					}
 					velocity[i] = velocity[i] - velocity[i] * percentageSlow - normalize(velocity[i]) * deltaSlow;
 				}
 			}
-			//vertices[i].updateBuf();
 		}
 	}
+	// Calculating the the net force for each Vertex, then assign the velocity based on it.
 	void heuristicIteration() {
 		// reseting velocities
 		for (int i = 0; i < velocity.size(); i++) {
 			velocity[i] = vec2(0, 0);
 		}
-		// checking if all points are 0,0. TODO: boundary check?
+		// Checking if all points are at 0,0. Needed to handle a case when all points are at 0,0.
 		bool allPoint00 = true;
 		for (int i = 0; i < vertices.size(); i++) {
 			if (vertices[i].center.position.x != 0 || vertices[i].center.position.y != 0) {
@@ -474,6 +459,7 @@ public:
 				break;
 			}
 		}
+		// Generate random velocities when all points are at 0,0
 		if (allPoint00) {
 			for (int i = 0; i < vertices.size(); i++) {
 				float x, y;
@@ -481,7 +467,7 @@ public:
 				y = (float)rand() / RAND_MAX * horizontalInterval * 2 - horizontalInterval;
 				velocity[i] = vec2(x, y);
 			}
-		} else {
+		} else { // else, calculate the net force for every point if posibble
 			for (int i = 0; i < vertices.size(); i++) {
 				for (int j = 0; j < vertices.size(); j++) {
 					// checking if the two points are the same or are one of them are nan or indexes are the same
@@ -491,12 +477,12 @@ public:
 						isnan(vertices[i].getCenter().position.x) ||
 						isnan(vertices[i].getCenter().position.y) ||
 						isnan(vertices[j].getCenter().position.x) ||
-						isnan(vertices[j].getCenter().position.y)) {
-						// the void is watching you as well as the points at 0,0. WAKE UP WAKE UP WAKE UP
+						isnan(vertices[j].getCenter().position.y)) { // value checks
+						// the void is watching you as well as the points (beginning with the purple one) at 0,0. WAKE UP WAKE UP WAKE UP
 						// (kind of) solved, but this comment is a reference to a meme, so I will just let it be here.
 					} else {
-						float distance = hyperDistance(vertices[j].getCenter(), vertices[i].getCenter());
-						if (std::find(vertices[i].center.pairs.begin(), vertices[i].center.pairs.end(), &vertices[j].center) != vertices[i].center.pairs.end()) {
+						float distance = hyperDistance(vertices[j].getCenter(), vertices[i].getCenter()); // guaranteed not nan
+						if (isConnected(vertices[i].center, vertices[j].center)) {
 							// if the two points are connected
 							float multiplier = (distance - desiredDistance);
 							vec3 dirVec = hyperDirectionVector(vertices[i].getCenter(), vertices[j].getCenter());
@@ -519,6 +505,13 @@ public:
 		for (int i = 0; i < vertices.size(); i++) {
 			vertices[i].iniCircle(vertices[i].tessellatedVertices);
 		}
+	}
+	// Checks if two points are connected.
+	bool isConnected(const HyperPoint& p1, const HyperPoint& p2) {
+		for (int i = 0; i < p1.pairs.size(); i++) {
+			if (p1.pairs[i] == &p2) { return true; }
+		}
+		return false;
 	}
 };
 
@@ -557,8 +550,7 @@ void onKeyboard(unsigned char key, int pX, int pY) {
 }
 
 // Key of ASCII code released
-void onKeyboardUp(unsigned char key, int pX, int pY) {
-}
+void onKeyboardUp(unsigned char key, int pX, int pY) { }
 
 // Storing old position of the mouse's projected hyperbolic position.
 // Needed for transitioning into the new position.
@@ -572,38 +564,20 @@ void onMouseMotion(int pX, int pY) {	// pX, pY are the pixel coordinates of the 
 	// Convert to normalized device space
 	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
 	float cY = 1.0f - 2.0f * pY / windowHeight;
-
 	// newPos = point on the beltrami klein disc projected onto the hypebolic plane
 	vec3 newPos = getHyperProjFromBK(vec3(cX, cY, 1));
-
 	// Handling panning mouse actions properly.
 	if (!mousePressed || oldPos.z == -1) { oldPos = newPos; }
-
 	// given two points (from p to q, from oldPos to newPos), pan to the other
 	graph.pan(HyperPoint(vec2(newPos.x, newPos.y)), HyperPoint(vec2(oldPos.x, oldPos.y)));
-
 	oldPos = newPos;
 	mousePressed = true;
 	glutPostRedisplay(); // Redraw the scene
 }
 
 // Mouse click event
-void onMouse(int button, int state, int pX, int pY) { // pX, pY are the pixel coordinates of the cursor in the coordinate system of the operation system
-	// Convert to normalized device space
-	float cX = 2.0f * pX / windowWidth - 1;	// flip y axis
-	float cY = 1.0f - 2.0f * pY / windowHeight;
-
-	char * buttonStat;
-	switch (state) {
-	case GLUT_DOWN: buttonStat = "pressed"; break;
-	case GLUT_UP:   buttonStat = "released"; mousePressed = false; break;
-	}
-
-	switch (button) {
-	case GLUT_LEFT_BUTTON:   printf("Left button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);   break;
-	case GLUT_MIDDLE_BUTTON: printf("Middle button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY); break;
-	case GLUT_RIGHT_BUTTON:  printf("Right button %s at (%3.2f, %3.2f)\n", buttonStat, cX, cY);  break;
-	}
+void onMouse(int button, int state, int pX, int pY) {
+	if (state == GLUT_UP) { mousePressed = false; }
 }
 
 // Time is previous segment, needed to calculate dtime.
@@ -613,9 +587,8 @@ void onIdle() {
 	// Time in ms
 	long time = glutGet(GLUT_ELAPSED_TIME); // elapsed time since the start of the program, first step
 	long dtime = time - oldTime;
-	if (dtime < 100) {
-		graph.tick(dtime);
-	}
-	glutPostRedisplay(); // Redraw the scene
+	// initialization fcks up panning (deform), so this is a needed latency constraint (though it works with 10fps< fine)
+	if (dtime < 100) { graph.tick(dtime); } 
 	oldTime = time; // last step
+	glutPostRedisplay(); // Redraw the scene
 }
